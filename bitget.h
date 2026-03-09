@@ -26,6 +26,7 @@ class Bitget {
   bool setLeverage(const int leverage);
   bool placeOrder(Order& order);           // limit maker order
   bool placeMarketOrder(Order& order);     // market taker order (open)
+  bool placeMarginOrder(MarginOrder& order);  // crossed margin only
   bool closePosition();                    // market close current position
   bool cancelOrder(const std::string& orderId);
   bool tickers(Ticker& ticker);
@@ -45,6 +46,8 @@ class Bitget {
   static bool savingsRedeem(Saving& saving);
   static bool transfer(const std::string& amount, const std::string& src,
                        const std::string& dst);
+  static bool crossedMarginAsset(const std::string& coin,
+                                 CrossedMarginAsset& asset);
 
  private:
   std::mutex curl_mtx_;

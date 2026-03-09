@@ -336,6 +336,97 @@ bool Bitget::placeMarketOrder(Order& order) {
   return false;
 }
 
+bool Bitget::placeMarginOrder(MarginOrder& order) {
+  std::string symbol = order.symbol.empty() ? getInstId() : order.symbol;
+  if (symbol.empty()) {
+    ERROR("placeMarginOrder: symbol is required");
+    return false;
+  }
+  if (order.side.empty()) {
+    ERROR("placeMarginOrder: side is required");
+    return false;
+  }
+  if (order.orderType.empty()) {
+    ERROR("placeMarginOrder: orderType is required");
+    return false;
+  }
+  if (order.loanType.empty()) {
+    ERROR("placeMarginOrder: loanType is required");
+    return false;
+  }
+
+  const bool is_limit = (order.orderType == "limit");
+  const bool is_market = (order.orderType == "market");
+  if (!is_limit && !is_market) {
+    ERROR("placeMarginOrder: orderType must be limit or market");
+    return false;
+  }
+
+  if (is_limit) {
+    if (order.price.empty()) {
+      ERROR("placeMarginOrder: price is required for limit orders");
+      return false;
+    }
+    if (order.baseSize.empty()) {
+      ERROR("placeMarginOrder: baseSize is required for limit orders");
+      return false;
+    }
+  }
+
+  if (is_market && order.side == "buy" && order.quoteSize.empty()) {
+    ERROR("placeMarginOrder: quoteSize is required for market buy");
+    return false;
+  }
+  if (is_market && order.side == "sell" && order.baseSize.empty()) {
+    ERROR("placeMarginOrder: baseSize is required for market sell");
+    return false;
+  }
+
+  std::string requestPath = "/api/v2/margin/crossed/place-order";
+
+  nlohmann::json j;
+  j["symbol"] = symbol;
+  j["side"] = order.side;
+  j["orderType"] = order.orderType;
+  j["loanType"] = order.loanType;
+
+  if (!order.clientOid.empty()) j["clientOid"] = order.clientOid;
+  if (!order.stpMode.empty()) j["stpMode"] = order.stpMode;
+
+  if (is_limit) {
+    j["force"] = order.force.empty() ? "gtc" : order.force;
+    j["price"] = order.price;
+    j["baseSize"] = order.baseSize;
+  } else {
+    if (order.side == "buy") {
+      j["quoteSize"] = order.quoteSize;
+    } else {
+      j["baseSize"] = order.baseSize;
+    }
+  }
+
+  auto response = sendRequest(requestPath, "POST", "", j.dump());
+  try {
+    auto res = nlohmann::json::parse(response);
+    std::string code = res["code"];
+    if (code != API_SUCCESS) {
+      ERROR("API error: " << code << ", " << response);
+      return false;
+    }
+
+    if (res.contains("data") && res["data"].contains("orderId") &&
+        !res["data"]["orderId"].is_null()) {
+      order.orderId = res["data"]["orderId"];
+    }
+    return true;
+  } catch (const nlohmann::json::exception& e) {
+    ERROR("placeMarginOrder error: " << e.what() << ", response:" << response);
+  } catch (const std::exception& e) {
+    ERROR("error: " << e.what());
+  }
+  return false;
+}
+
 bool Bitget::closePosition() {
   // Get current position to determine size and direction
   Position position;
@@ -437,6 +528,41 @@ bool Bitget::assets(float& available) {
     ERROR("assets error: " << e.what() << ", response:" << response);
   } catch (const std::exception& e) {
     ERROR("exception: " << e.what());
+  }
+  return false;
+}
+
+bool Bitget::crossedMarginAsset(const std::string& coin,
+                                CrossedMarginAsset& asset) {
+  std::string requestPath = "/api/v2/margin/crossed/account/assets";
+  std::string queryString = "?coin=" + coin;
+  auto response = sendRequestStatic(requestPath, "GET", queryString);
+
+  try {
+    auto j = nlohmann::json::parse(response);
+    std::string code = j["code"];
+    if (code != API_SUCCESS) {
+      ERROR("API error: " << code << ", " << response);
+      return false;
+    }
+
+    if (!j.contains("data") || !j["data"].is_array() || j["data"].empty()) {
+      return false;
+    }
+
+    const auto& item = j["data"][0];
+    asset.coin = item.value("coin", coin);
+    asset.totalAmount = safeStof(item.value("totalAmount", "0"));
+    asset.available = safeStof(item.value("available", "0"));
+    asset.frozen = safeStof(item.value("frozen", "0"));
+    asset.borrow = safeStof(item.value("borrow", "0"));
+    asset.interest = safeStof(item.value("interest", "0"));
+    asset.net = safeStof(item.value("net", "0"));
+    return true;
+  } catch (const nlohmann::json::exception& e) {
+    ERROR("crossedMarginAsset error: " << e.what() << ", response:" << response);
+  } catch (const std::exception& e) {
+    ERROR("error: " << e.what());
   }
   return false;
 }

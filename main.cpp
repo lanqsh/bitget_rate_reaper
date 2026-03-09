@@ -87,16 +87,66 @@ int main(int argc, char* argv[]) {
   Bitget::assets(availBal);
   INFO("availBal " << availBal);
 
-  std::string inst = (argc > 1) ? argv[1] : "SOL";
-  if (inst.find(MARGIN_COIN) == std::string::npos) {
-    inst += MARGIN_COIN;
-  }
+  // Hedge test: DOGE crossed-margin long + futures short, both 2x.
+  const std::string hedgeSymbol = "DOGEUSDT";
+  auto futuresClient = std::make_shared<Bitget>(hedgeSymbol);
+  futuresClient->setLeverage(2);
 
-  // TODO: strategy debug later
-  // auto client = std::make_shared<Bitget>(inst);
-  // auto strategy = std::make_shared<Strategy>(client);
-  // strategy->start();
-  // strategy->wait();
+  Ticker ticker;
+  if (futuresClient->tickers(ticker) && ticker.lastPr > 0) {
+    float minBaseSize = safeStof(futuresClient->getSymbol().minTradeNum);
+    if (minBaseSize > 0) {
+      minBaseSize = std::stof(
+          adjustDecimalPlaces(minBaseSize, futuresClient->getSymbol().volumePlace));
+      float minNotional = minBaseSize * ticker.lastPr;
+
+      MarginOrder marginOrder;
+      marginOrder.symbol = hedgeSymbol;
+      marginOrder.side = "buy";
+      marginOrder.orderType = "market";
+      marginOrder.loanType = "autoLoan";
+      marginOrder.quoteSize = safeFtos(minNotional, futuresClient->precision());
+
+      Order futuresOrder;
+      futuresOrder.symbol = hedgeSymbol;
+      futuresOrder.side = "sell";
+      futuresOrder.size = minBaseSize;
+
+      bool marginOk = futuresClient->placeMarginOrder(marginOrder);
+      bool futuresOk = futuresClient->placeMarketOrder(futuresOrder);
+
+      NOTICE("Hedge test result marginLong=" << marginOk
+             << " futuresShort=" << futuresOk << " symbol=" << hedgeSymbol
+             << " baseSize=" << minBaseSize << " notional=" << minNotional);
+
+      if (marginOk && futuresOk) {
+        CrossedMarginAsset dogeAsset;
+        Position futuresPosition;
+        bool marginAssetOk = Bitget::crossedMarginAsset("DOGE", dogeAsset);
+        bool futuresPosOk = futuresClient->singlePosition(futuresPosition);
+
+        if (marginAssetOk && futuresPosOk) {
+          float marginDogeQty =
+              dogeAsset.totalAmount > 0 ? dogeAsset.totalAmount : dogeAsset.net;
+          float futuresDogeQty = futuresPosition.total;
+          float diff = std::fabs(marginDogeQty - futuresDogeQty);
+          bool hedgeMatched = diff <= minBaseSize;
+
+          NOTICE("Hedge check DOGE marginQty=" << marginDogeQty
+                 << " futuresQty=" << futuresDogeQty << " diff=" << diff
+                 << " threshold=" << minBaseSize
+                 << " matched=" << hedgeMatched);
+        } else {
+          ERROR("Hedge check failed: marginAssetOk=" << marginAssetOk
+                << " futuresPosOk=" << futuresPosOk);
+        }
+      }
+    } else {
+      ERROR("Hedge test skipped: invalid minTradeNum for " << hedgeSymbol);
+    }
+  } else {
+    ERROR("Hedge test skipped: failed to fetch ticker for " << hedgeSymbol);
+  }
 
   // Keep monitor running for debugging and print top funding rates from main.
   while (true) {

@@ -4,6 +4,14 @@ An automated funding rate arbitrage system built for Bitget perpetual futures ma
 ## env
 Copy config.example.properties to config.properties, then fill your credentials.
 
+## Security Notes
+- API key must be bound to your trusted server IP (IP whitelist required).
+- Do NOT grant transfer/withdraw permissions to this API key.
+- Enable only the minimum required permissions:
+    - Spot margin trading permission
+    - Futures (contract) trading permission
+- It is strongly recommended to use a dedicated API key for this bot only.
+
 ## Install Dependencies
 ```
 sudo apt update
