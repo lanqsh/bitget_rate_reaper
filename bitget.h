@@ -5,7 +5,9 @@
 
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
+#include <vector>
 
 #include "data.h"
 #include "util.h"
@@ -25,10 +27,10 @@ class Bitget {
                           const std::string& body = "");
   bool symbols();
   bool setLeverage(const int leverage);
-  bool placeOrder(Order& order);           // limit maker order
-  bool placeMarketOrder(Order& order);     // market taker order (open)
-  bool placeMarginOrder(MarginOrder& order);  // crossed margin only
-  bool closeFuturesPosition();             // market close current futures position
+  bool placeOrder(Order& order);
+  bool placeMarketOrder(Order& order);
+  bool placeMarginOrder(MarginOrder& order);
+  bool closeFuturesPosition();
   bool closeCrossedMarginPosition(const std::string& coin = "");
   bool cancelOrder(const std::string& orderId);
   bool tickers(Ticker& ticker);
@@ -51,9 +53,12 @@ class Bitget {
   static bool crossedMarginAsset(const std::string& coin,
                                  CrossedMarginAsset& asset);
   bool crossedMarginRepay(const std::string& coin, float amount);
+  static bool crossedMarginSymbolSupported(const std::string& symbol);
+  static bool allFuturesPositions(std::vector<Position>& positions);
 
  private:
   std::mutex curl_mtx_;
+  CURL* curl_{nullptr};
   Symbol symbol_;
 
   static std::string baseUrl_;
@@ -61,6 +66,11 @@ class Bitget {
   static std::string secretKey_;
   static std::string passphrase_;
   static std::mutex curl_smtx_;
+  static CURL* curl_s_;
+
+  static std::set<std::string> crossedMarginSymbols_;
+  static bool crossedMarginSymbolsLoaded_;
+  static std::mutex crossedMarginSymbolsMtx_;
 };
 
-#endif  // BITGET_H
+#endif

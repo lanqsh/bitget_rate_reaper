@@ -15,7 +15,7 @@
 #include "Poco/Util/PropertyFileConfiguration.h"
 #include "bitget.h"
 #include "fundingratemonitor.h"
-#include "strategy.h"
+#include "strategymanager.h"
 #include "tracer.h"
 #include "util.h"
 
@@ -87,14 +87,18 @@ int main(int argc, char* argv[]) {
   Bitget::assets(availBal);
   INFO("availBal " << availBal);
 
-  const std::string symbol = "PEPE";
-  auto client = std::make_shared<Bitget>(symbol);
-  auto strategy = std::make_shared<Strategy>(client);
-  bool closeOk = strategy->closePosition();
-  NOTICE("Close PEPE position result closeOk=" << closeOk);
+  auto monitor = std::make_shared<FundingRateMonitor>(60);
+  monitor->start();
 
-  // bool openOk = strategy->openPosition();
-  // NOTICE("Open PEPE position result openOk=" << openOk);
+  auto manager = std::make_shared<StrategyManager>(monitor);
+  manager->start();
+
+  while (true) {
+    SLEEP_MS(1000);
+  }
+
+  manager->stop();
+  monitor->stop();
 
   curl_global_cleanup();
   NOTICE("STOP PID " << getpid());

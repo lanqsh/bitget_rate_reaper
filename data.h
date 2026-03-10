@@ -44,15 +44,15 @@ struct Order {
 
 struct MarginOrder {
   std::string symbol;
-  std::string side;       // buy | sell
-  std::string orderType;  // limit | market
-  std::string loanType;   // normal | autoLoan | autoRepay | autoLoanAndRepay
-  std::string force;      // gtc | post_only | fok | ioc
+  std::string side;
+  std::string orderType;
+  std::string loanType;
+  std::string force;
   std::string price;
   std::string baseSize;
   std::string quoteSize;
   std::string clientOid;
-  std::string stpMode;    // none | cancel_taker | cancel_maker | cancel_both
+  std::string stpMode;
   std::string orderId;
 };
 
@@ -91,12 +91,11 @@ struct Saving {
   std::string periodType;
 };
 
-// Funding rate info for a perpetual contract
 struct FundingRate {
   std::string symbol;
-  float rate{0.0};           // current funding rate (positive = longs pay shorts)
-  int fundingRateInterval{0};  // funding interval in hours
-  uint64_t nextFundingTime{0}; // next settlement timestamp in ms
+  float rate{0.0};
+  int fundingRateInterval{0};
+  uint64_t nextFundingTime{0};
 };
 
 #endif

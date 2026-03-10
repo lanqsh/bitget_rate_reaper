@@ -9,31 +9,6 @@
 
 Strategy::Strategy(std::shared_ptr<Bitget> client) : client_(client) { init(); }
 
-Strategy::~Strategy() { stop(); }
-
-void Strategy::start() {
-  thread_ = std::make_shared<Poco::Thread>();
-  thread_->setName(instId_.substr(0, 3));
-  if (!thread_running_ && thread_) {
-    thread_->start(*this);
-    thread_running_ = true;
-  }
-}
-
-void Strategy::stop() {
-  thread_running_ = false;
-  if (thread_) {
-    thread_->join();
-    thread_ = nullptr;
-  }
-}
-
-void Strategy::wait() {
-  if (thread_ && thread_->isRunning()) {
-    thread_->join();
-  }
-}
-
 void Strategy::init() {
   instId_ = client_->getInstId();
   NOTICE("Strategy initialized for " << instId_);
@@ -41,6 +16,11 @@ void Strategy::init() {
 
 bool Strategy::updateFundingRate() {
   return client_->fundingRate(funding_rate_);
+}
+
+bool Strategy::hasPosition() {
+  if (!client_->singlePosition(position_)) return false;
+  return position_.total > 0;
 }
 
 bool Strategy::openPosition() {
@@ -70,8 +50,6 @@ bool Strategy::openPosition() {
     return false;
   }
 
-  // sizeMultiplier is the minimum lot size increment on Bitget futures.
-  // Each contract = 1 base token; size parameter must be a multiple of lotSize.
   float lotSize = safeStof(client_->getSymbol().sizeMultiplier);
   if (lotSize <= 0) lotSize = 1.0f;
 
@@ -86,7 +64,6 @@ bool Strategy::openPosition() {
     return false;
   }
 
-  // Round down to nearest lot size boundary.
   int contractCount = static_cast<int>(
       std::floor(static_cast<float>(hedgeTokenQty) / lotSize)) *
       static_cast<int>(lotSize);
@@ -95,7 +72,7 @@ bool Strategy::openPosition() {
           << hedgeTokenQty << " lotSize=" << lotSize);
     return false;
   }
-  hedgeTokenQty = contractCount;  // align margin qty to lot boundary
+  hedgeTokenQty = contractCount;
 
   MarginOrder marginOrder;
   marginOrder.symbol = instId_;
@@ -126,6 +103,14 @@ bool Strategy::openPosition() {
          << " contracts=" << contractCount << " tokenQty=" << hedgeTokenQty
          << " fundingRate=" << currentFunding.rate);
 
+  if (marginOk && futuresOk) {
+    entry_price_ = ticker.lastPr;
+    std::string msg = "OpenPosition " + instId_ +
+                      " side=" + futuresSide +
+                      " price=" + safeFtos(ticker.lastPr, client_->precision()) +
+                      " fundingRate=" + safeFtos(currentFunding.rate * 100.0f, 4) + "%";
+    sendMessage(msg, true);
+  }
   return marginOk && futuresOk;
 }
 
@@ -140,64 +125,28 @@ bool Strategy::closePosition() {
   return true;
 }
 
-bool Strategy::hasPosition() {
-  if (!client_->singlePosition(position_)) return false;
-  return position_.total > 0;
-}
+bool Strategy::checkStopLoss() {
+  if (entry_price_ <= 0) return false;
 
-void Strategy::run() {
-  DEBUG("Strategy start running " << instId_);
-  while (thread_running_) {
-    if (!updateFundingRate()) {
-      SLEEP_MS(STRATEGY_POLL_INTERVAL_MS);
-      continue;
-    }
-
-    bool in_position = hasPosition();
-    uint64_t now_ms = getCurrentTimeMs();
-    int64_t time_to_settlement =
-        static_cast<int64_t>(funding_rate_.nextFundingTime) -
-        static_cast<int64_t>(now_ms);
-
-    if (!in_position && !position_opened_) {
-      // Entry: rate must be above threshold, settlement within entry window
-      if (std::abs(funding_rate_.rate) > kConfig.fundingRateThreshold &&
-          time_to_settlement > 0 &&
-          time_to_settlement < ENTRY_BEFORE_SETTLEMENT_MS) {
-        NOTICE(instId_ << " entry signal: rate=" << funding_rate_.rate
-                       << ", time_to_settlement=" << time_to_settlement / 1000
-                       << "s");
-        if (openPosition()) {
-          position_opened_ = true;
-        }
-      } else {
-        DEBUG(instId_ << " waiting: rate=" << funding_rate_.rate
-                      << " threshold=" << kConfig.fundingRateThreshold
-                      << " time_to_settlement=" << time_to_settlement / 1000
-                      << "s");
-      }
-    } else if (in_position && position_opened_) {
-      // Exit: wait until settlement has passed + buffer
-      if (now_ms > settlement_time_ + EXIT_AFTER_SETTLEMENT_MS) {
-        NOTICE(instId_ << " funding collected, closing position");
-        if (closePosition()) {
-          position_opened_ = false;
-          break;  // one round done; manager will restart for next opportunity
-        }
-      } else {
-        int64_t remain =
-            static_cast<int64_t>(settlement_time_ + EXIT_AFTER_SETTLEMENT_MS) -
-            static_cast<int64_t>(now_ms);
-        DEBUG(instId_ << " holding, settlement in " << remain / 1000 << "s");
-      }
-    } else if (!in_position && position_opened_) {
-      // Position was closed externally (e.g. liquidation or manual close)
-      NOTICE(instId_ << " position closed externally");
-      position_opened_ = false;
-      break;
-    }
-
-    SLEEP_MS(STRATEGY_POLL_INTERVAL_MS);
+  Ticker ticker;
+  if (!client_->tickers(ticker) || ticker.lastPr <= 0) {
+    ERROR("checkStopLoss: failed to get ticker for " << instId_);
+    return false;
   }
-  DEBUG("Strategy stop running " << instId_);
+
+  float deviation = std::fabs(ticker.lastPr - entry_price_) / entry_price_;
+  if (deviation >= STOP_LOSS_RATIO) {
+    NOTICE("checkStopLoss: price deviation " << deviation * 100.0f
+           << "% >= " << STOP_LOSS_RATIO * 100.0f
+           << "%, entry=" << entry_price_
+           << " current=" << ticker.lastPr
+           << " inst=" << instId_ << ", closing position");
+    return true;
+  }
+
+  DEBUG("checkStopLoss: inst=" << instId_
+        << " entry=" << entry_price_
+        << " current=" << ticker.lastPr
+        << " deviation=" << deviation * 100.0f << "%");
+  return false;
 }
