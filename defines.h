@@ -20,4 +20,7 @@
 // Symbol scan interval (5 minutes)
 #define SCAN_INTERVAL_MS (5 * 60 * 1000)
 
+// Floating point epsilon thresholds
+#define FLOAT_EPSILON   1e-6f   // near-zero threshold
+
 #endif

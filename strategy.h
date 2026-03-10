@@ -20,16 +20,16 @@ class Strategy : public Poco::Runnable {
   void start();
   void stop();
   void wait();
+  bool openPosition();   // open crossed-margin + futures hedge
+  bool closePosition();  // close crossed-margin + futures hedge
   bool isRunning() { return thread_ && thread_->isRunning(); }
-  std::string GetInstId() { return instId_; }
-  float GetFundingRate() { return funding_rate_.rate; }
+  std::string getInstId() { return instId_; }
+  float getFundingRate() { return funding_rate_.rate; }
 
  private:
-  void Init();
-  bool UpdateFundingRate();
-  bool OpenPosition();
-  bool ClosePosition();
-  bool HasPosition();
+  void init();
+  bool updateFundingRate();
+  bool hasPosition();
 
  private:
   bool thread_running_{false};
@@ -41,7 +41,8 @@ class Strategy : public Poco::Runnable {
   FundingRate funding_rate_;
   Position position_;
   bool position_opened_{false};
-  uint64_t settlement_time_{0};  // next settlement timestamp at position open time
+  uint64_t settlement_time_{
+      0};  // next settlement timestamp at position open time
 };
 
 #endif

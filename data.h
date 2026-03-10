@@ -7,7 +7,7 @@
 #include "defines.h"
 
 struct Config {
-  float input{1.0f};
+  float openPrincipal{1.0f};
   float lever;
   float fundingRateThreshold;
 

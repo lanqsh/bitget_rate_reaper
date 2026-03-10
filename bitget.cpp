@@ -1,7 +1,7 @@
 #include "bitget.h"
 
-#include <cmath>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <ctime>
 #include <iomanip>
@@ -427,43 +427,270 @@ bool Bitget::placeMarginOrder(MarginOrder& order) {
   return false;
 }
 
-bool Bitget::closePosition() {
+bool Bitget::closeCrossedMarginPosition(const std::string& coin) {
+  std::string baseCoin = coin.empty() ? getBaseCoin() : coin;
+  if (baseCoin.empty()) {
+    ERROR("closeCrossedMarginPosition: empty coin and symbol=" << getInstId());
+    return false;
+  }
+
+  CrossedMarginAsset asset;
+  if (!Bitget::crossedMarginAsset(baseCoin, asset)) {
+    ERROR("closeCrossedMarginPosition: failed to query asset for " << baseCoin);
+    return false;
+  }
+
+  const float netQty = asset.net;
+  if (std::fabs(netQty) < FLOAT_EPSILON) {
+    NOTICE("closeCrossedMarginPosition: " << baseCoin << " already flat");
+    return true;
+  }
+
+  MarginOrder order;
+  order.symbol = getInstId();
+  order.orderType = "market";
+  order.loanType = "autoRepay";
+
+  if (netQty > 0) {
+    float sellableQty = std::min(std::fabs(netQty), asset.available);
+    if (sellableQty <= FLOAT_EPSILON) {
+      ERROR("closeCrossedMarginPosition: no available qty to sell, net="
+            << netQty << " available=" << asset.available);
+      return false;
+    }
+
+    int places = safeStoi(symbol_.volumePlace);
+    if (places < 0) places = 0;
+    const float scale = std::pow(10.0f, static_cast<float>(places));
+    sellableQty = std::floor(sellableQty * scale) / scale;
+    if (sellableQty <= FLOAT_EPSILON) {
+      ERROR("closeCrossedMarginPosition: sell qty too small after floor, qty="
+            << sellableQty);
+      return false;
+    }
+
+    order.side = "sell";
+    order.baseSize = safeFtos(sellableQty, places);
+  } else {
+    Ticker ticker;
+    if (!tickers(ticker) || ticker.lastPr <= 0) {
+      ERROR("closeCrossedMarginPosition: failed to get ticker for "
+            << getInstId());
+      return false;
+    }
+
+    float referenceAsk = ticker.askPr > 0 ? ticker.askPr : ticker.lastPr;
+    float borrowUsdt = std::fabs(netQty) * referenceAsk;
+    order.side = "buy";
+
+    // autoRepay minimum check is on the actual borrow USDT value, NOT quoteSize.
+    // If borrow < 1 USDT, autoRepay always fails. Use normal buy + manual repay instead.
+    if (borrowUsdt < 1.0f) {
+      order.loanType = "normal";
+      order.quoteSize = "1.0000";
+    } else {
+      // Use 1.5% buffer to account for price movement and precision truncation.
+      order.loanType = "autoRepay";
+      order.quoteSize = safeFtos(borrowUsdt * 1.015f, 4);
+    }
+  }
+
+  bool ok = placeMarginOrder(order);
+  NOTICE("closeCrossedMarginPosition result symbol="
+         << getInstId() << " coin=" << baseCoin << " net=" << netQty
+         << " side=" << order.side << " loanType=" << order.loanType
+         << " ok=" << ok);
+
+  // After a normal (non-autoRepay) buy, repay the borrow directly in base coin.
+  if (ok && netQty < 0 && order.loanType == "normal") {
+    float repayAmount = asset.borrow + asset.interest;
+    if (repayAmount > FLOAT_EPSILON) {
+      bool repaid = crossedMarginRepay(baseCoin, repayAmount);
+      NOTICE("closeCrossedMarginPosition manual repay coin=" << baseCoin
+             << " amount=" << repayAmount << " ok=" << repaid);
+      ok = repaid;
+    }
+    return ok;
+  }
+
+  // Verify closure: retry once if a short borrow residual remains (autoRepay path).
+  if (ok && netQty < 0) {
+    CrossedMarginAsset assetAfter;
+    if (Bitget::crossedMarginAsset(baseCoin, assetAfter) &&
+        assetAfter.net < -FLOAT_EPSILON) {
+      NOTICE("closeCrossedMarginPosition: residual short " << assetAfter.net
+             << " " << baseCoin << ", retrying");
+      Ticker ticker2;
+      if (!tickers(ticker2) || ticker2.lastPr <= 0) return ok;
+      float refAsk2 = ticker2.askPr > 0 ? ticker2.askPr : ticker2.lastPr;
+      float residualUsdt = std::fabs(assetAfter.net) * refAsk2;
+      if (residualUsdt < 1.0f) {
+        // Same small-borrow problem: buy normal + manual repay.
+        MarginOrder retryOrder;
+        retryOrder.symbol = getInstId();
+        retryOrder.orderType = "market";
+        retryOrder.loanType = "normal";
+        retryOrder.side = "buy";
+        retryOrder.quoteSize = "1.0000";
+        ok = placeMarginOrder(retryOrder);
+        if (ok) {
+          float repayAmount = assetAfter.borrow + assetAfter.interest;
+          ok = crossedMarginRepay(baseCoin, repayAmount);
+        }
+      } else {
+        MarginOrder retryOrder;
+        retryOrder.symbol = getInstId();
+        retryOrder.orderType = "market";
+        retryOrder.loanType = "autoRepay";
+        retryOrder.side = "buy";
+        retryOrder.quoteSize = safeFtos(residualUsdt * 1.02f, 4);
+        ok = placeMarginOrder(retryOrder);
+      }
+      NOTICE("closeCrossedMarginPosition retry result ok=" << ok);
+    }
+  }
+
+  return ok;
+}
+
+bool Bitget::crossedMarginRepay(const std::string& coin, float amount) {
+  nlohmann::json j;
+  j["coin"] = coin;
+  j["amount"] = safeFtos(amount, 8);
+
+  NOTICE("crossedMarginRepay coin=" << coin << " amount=" << amount);
+  auto response = sendRequest("/api/v2/margin/crossed/repay", "POST", "", j.dump());
+  try {
+    auto res = nlohmann::json::parse(response);
+    std::string code = res["code"];
+    if (code != API_SUCCESS) {
+      ERROR("crossedMarginRepay error: " << code << ", " << response);
+      return false;
+    }
+    return true;
+  } catch (const nlohmann::json::exception& e) {
+    ERROR("crossedMarginRepay parse error: " << e.what());
+  } catch (const std::exception& e) {
+    ERROR("crossedMarginRepay error: " << e.what());
+  }
+  return false;
+}
+
+bool Bitget::closeFuturesPosition() {
   // Get current position to determine size and direction
   Position position;
   if (!singlePosition(position)) {
-    ERROR("closePosition: failed to get position for " << getInstId());
+    ERROR("closeFuturesPosition: failed to get position for " << getInstId());
     return false;
   }
   if (position.total == 0) {
     return true;  // nothing to close
   }
 
-  std::string requestPath = "/api/v2/mix/order/place-order";
-  nlohmann::json j;
-  j["symbol"] = getInstId();
-  // close: opposite side of the open position
-  j["side"] = (position.holdSide == "long") ? "sell" : "buy";
-  j["productType"] = "USDT-FUTURES";
-  j["marginMode"] = "crossed";
-  j["marginCoin"] = "USDT";
-  j["tradeSide"] = "close";
-  j["orderType"] = "market";
-  j["size"] = adjustDecimalPlaces(position.total, symbol_.volumePlace);
+  NOTICE("closeFuturesPosition snapshot symbol="
+         << getInstId() << " holdSide=" << position.holdSide
+         << " total=" << position.total << " available=" << position.available
+         << " locked=" << position.locked);
 
-  auto response = sendRequest(requestPath, "POST", "", j.dump());
-  try {
-    auto j = nlohmann::json::parse(response);
-    std::string code = j["code"];
-    if (code != API_SUCCESS) {
-      ERROR("API error: " << code << ", " << response);
-      return false;
+  const float closeQty =
+      (position.available > 0) ? position.available : position.total;
+  const std::string size = adjustDecimalPlaces(closeQty, symbol_.volumePlace);
+  std::string requestPath = "/api/v2/mix/order/place-order";
+
+  auto submit_close = [&](const std::string& side, bool withTradeSide,
+                          bool withHoldSide, bool withReduceOnly) {
+    nlohmann::json j;
+    j["symbol"] = getInstId();
+    j["side"] = side;
+    j["productType"] = "USDT-FUTURES";
+    j["marginMode"] = "crossed";
+    j["marginCoin"] = "USDT";
+    j["orderType"] = "market";
+    j["size"] = size;
+    if (withTradeSide) {
+      j["tradeSide"] = "close";
     }
-    return true;
-  } catch (const nlohmann::json::exception& e) {
-    ERROR("closePosition error: " << e.what() << ", response:" << response);
-  } catch (const std::exception& e) {
-    ERROR("error: " << e.what());
+    if (withHoldSide) {
+      j["holdSide"] = position.holdSide;
+    }
+    if (withReduceOnly) {
+      j["reduceOnly"] = "YES";
+    }
+
+    auto response = sendRequest(requestPath, "POST", "", j.dump());
+    try {
+      auto res = nlohmann::json::parse(response);
+      std::string code = res["code"];
+      if (code != API_SUCCESS) {
+        ERROR("closePosition API error: code="
+              << code << " side=" << side << " withTradeSide=" << withTradeSide
+              << " withHoldSide=" << withHoldSide
+              << " withReduceOnly=" << withReduceOnly << ", " << response);
+        return false;
+      }
+      return true;
+    } catch (const nlohmann::json::exception& e) {
+      ERROR("closeFuturesPosition parse error: " << e.what()
+                                                 << ", response:" << response);
+    } catch (const std::exception& e) {
+      ERROR("closeFuturesPosition error: " << e.what());
+    }
+    return false;
+  };
+
+  // Try explicit long/short closes first — most reliable in hedge mode
+  nlohmann::json jLongClose;
+  jLongClose["symbol"] = getInstId();
+  jLongClose["side"] = "sell";
+  jLongClose["productType"] = "USDT-FUTURES";
+  jLongClose["marginMode"] = "crossed";
+  jLongClose["marginCoin"] = "USDT";
+  jLongClose["orderType"] = "market";
+  jLongClose["tradeSide"] = "close";
+  jLongClose["holdSide"] = "long";
+  jLongClose["size"] = size;
+  auto respLongClose = sendRequest(requestPath, "POST", "", jLongClose.dump());
+  try {
+    auto res = nlohmann::json::parse(respLongClose);
+    if (res["code"] == API_SUCCESS) return true;
+  } catch (...) {
   }
+
+  nlohmann::json jShortClose;
+  jShortClose["symbol"] = getInstId();
+  jShortClose["side"] = "buy";
+  jShortClose["productType"] = "USDT-FUTURES";
+  jShortClose["marginMode"] = "crossed";
+  jShortClose["marginCoin"] = "USDT";
+  jShortClose["orderType"] = "market";
+  jShortClose["tradeSide"] = "close";
+  jShortClose["holdSide"] = "short";
+  jShortClose["size"] = size;
+  auto respShortClose = sendRequest(requestPath, "POST", "", jShortClose.dump());
+  try {
+    auto res = nlohmann::json::parse(respShortClose);
+    if (res["code"] == API_SUCCESS) return true;
+  } catch (...) {
+  }
+
+  // Fallback: derive close side from queried holdSide
+  const std::string guessedCloseSide =
+      (position.holdSide == "long") ? "sell" : "buy";
+  const std::string oppositeCloseSide =
+      (guessedCloseSide == "sell") ? "buy" : "sell";
+
+  if (submit_close(guessedCloseSide, true, true, false)) return true;
+  if (submit_close(guessedCloseSide, true, false, false)) return true;
+  if (submit_close(guessedCloseSide, false, false, false)) return true;
+
+  if (submit_close(oppositeCloseSide, true, true, false)) return true;
+  if (submit_close(oppositeCloseSide, true, false, false)) return true;
+  if (submit_close(oppositeCloseSide, false, false, false)) return true;
+
+  if (submit_close("sell_single", false, false, true)) return true;
+  if (submit_close("buy_single", false, false, true)) return true;
+  if (submit_close("sell_single", false, false, false)) return true;
+  if (submit_close("buy_single", false, false, false)) return true;
   return false;
 }
 
@@ -560,7 +787,8 @@ bool Bitget::crossedMarginAsset(const std::string& coin,
     asset.net = safeStof(item.value("net", "0"));
     return true;
   } catch (const nlohmann::json::exception& e) {
-    ERROR("crossedMarginAsset error: " << e.what() << ", response:" << response);
+    ERROR("crossedMarginAsset error: " << e.what()
+                                       << ", response:" << response);
   } catch (const std::exception& e) {
     ERROR("error: " << e.what());
   }
@@ -829,7 +1057,8 @@ bool Bitget::transfer(const std::string& amount, const std::string& src,
 
 bool Bitget::fundingRate(FundingRate& fr) {
   std::string requestPath = "/api/v2/mix/market/current-fund-rate";
-  std::string queryString = "?symbol=" + getInstId() + "&productType=usdt-futures";
+  std::string queryString =
+      "?symbol=" + getInstId() + "&productType=usdt-futures";
   auto response = sendRequest(requestPath, "GET", queryString);
   try {
     auto j = nlohmann::json::parse(response);
@@ -865,4 +1094,3 @@ bool Bitget::fundingRate(FundingRate& fr) {
   }
   return false;
 }
-
