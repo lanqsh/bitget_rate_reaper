@@ -16,7 +16,8 @@ class Bitget {
   Bitget(const std::string& instId);
   ~Bitget();
   void init();
-  std::string getInstId() { return symbol_.symbol; };
+  std::string getBaseCoin() const { return symbol_.symbol; }
+  std::string getInstId() const { return symbol_.symbol + MARGIN_COIN; }
   int precision() { return safeStoi(symbol_.pricePlace); }
   std::string sendRequest(const std::string& requestPath,
                           const std::string& method,
@@ -26,7 +27,9 @@ class Bitget {
   bool setLeverage(const int leverage);
   bool placeOrder(Order& order);           // limit maker order
   bool placeMarketOrder(Order& order);     // market taker order (open)
-  bool closePosition();                    // market close current position
+  bool placeMarginOrder(MarginOrder& order);  // crossed margin only
+  bool closeFuturesPosition();             // market close current futures position
+  bool closeCrossedMarginPosition(const std::string& coin = "");
   bool cancelOrder(const std::string& orderId);
   bool tickers(Ticker& ticker);
   bool tickers(std::map<std::string, FundingRate>& fundingRates);
@@ -45,6 +48,9 @@ class Bitget {
   static bool savingsRedeem(Saving& saving);
   static bool transfer(const std::string& amount, const std::string& src,
                        const std::string& dst);
+  static bool crossedMarginAsset(const std::string& coin,
+                                 CrossedMarginAsset& asset);
+  bool crossedMarginRepay(const std::string& coin, float amount);
 
  private:
   std::mutex curl_mtx_;

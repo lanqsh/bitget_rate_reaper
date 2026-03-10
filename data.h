@@ -7,7 +7,7 @@
 #include "defines.h"
 
 struct Config {
-  float input{1.0f};
+  float openPrincipal{1.0f};
   float lever;
   float fundingRateThreshold;
 
@@ -40,6 +40,30 @@ struct Order {
   std::string status;
   std::string tradeSide;
   std::string reduceOnly;
+};
+
+struct MarginOrder {
+  std::string symbol;
+  std::string side;       // buy | sell
+  std::string orderType;  // limit | market
+  std::string loanType;   // normal | autoLoan | autoRepay | autoLoanAndRepay
+  std::string force;      // gtc | post_only | fok | ioc
+  std::string price;
+  std::string baseSize;
+  std::string quoteSize;
+  std::string clientOid;
+  std::string stpMode;    // none | cancel_taker | cancel_maker | cancel_both
+  std::string orderId;
+};
+
+struct CrossedMarginAsset {
+  std::string coin;
+  float totalAmount{0.0};
+  float available{0.0};
+  float frozen{0.0};
+  float borrow{0.0};
+  float interest{0.0};
+  float net{0.0};
 };
 
 struct Position {

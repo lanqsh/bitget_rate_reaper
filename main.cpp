@@ -15,6 +15,7 @@
 #include "Poco/Util/PropertyFileConfiguration.h"
 #include "bitget.h"
 #include "fundingratemonitor.h"
+#include "strategy.h"
 #include "tracer.h"
 #include "util.h"
 
@@ -51,7 +52,9 @@ void InitConfig() {
     AutoPtr<PropertyFileConfiguration> config =
         new PropertyFileConfiguration("config.properties");
     kConfig.lever = config->getDouble("order.lever");
-    kConfig.fundingRateThreshold = config->getDouble("order.fundingRateThreshold");
+    kConfig.fundingRateThreshold =
+        config->getDouble("order.fundingRateThreshold");
+    kConfig.openPrincipal = config->getDouble("order.openPrincipal");
 
     kConfig.apiKey = config->getString("bitget.apiKey");
     kConfig.secretKey = config->getString("bitget.secretKey");
@@ -76,9 +79,6 @@ int main(int argc, char* argv[]) {
   InitConfig();
   curl_global_init(CURL_GLOBAL_DEFAULT);
 
-  auto fundingRateMonitor = std::make_shared<FundingRateMonitor>();
-  fundingRateMonitor->start();
-
   welcome();
   NOTICE("START PID " << getpid());
   NOTICE_("api", "START PID " << getpid());
@@ -87,39 +87,14 @@ int main(int argc, char* argv[]) {
   Bitget::assets(availBal);
   INFO("availBal " << availBal);
 
-  std::string inst = (argc > 1) ? argv[1] : "SOL";
-  if (inst.find(MARGIN_COIN) == std::string::npos) {
-    inst += MARGIN_COIN;
-  }
+  const std::string symbol = "PEPE";
+  auto client = std::make_shared<Bitget>(symbol);
+  auto strategy = std::make_shared<Strategy>(client);
+  bool closeOk = strategy->closePosition();
+  NOTICE("Close PEPE position result closeOk=" << closeOk);
 
-  // TODO: strategy debug later
-  // auto client = std::make_shared<Bitget>(inst);
-  // auto strategy = std::make_shared<Strategy>(client);
-  // strategy->start();
-  // strategy->wait();
-
-  // Keep monitor running for debugging and print top funding rates from main.
-  while (true) {
-    auto allFundingRates = fundingRateMonitor->getAllFundingRates();
-    if (!allFundingRates.empty()) {
-      std::sort(allFundingRates.begin(), allFundingRates.end(),
-                [](const FundingRate& left, const FundingRate& right) {
-                  return std::fabs(left.rate) > std::fabs(right.rate);
-                });
-
-      NOTICE("All " << allFundingRates.size()
-                     << " symbols by |fundingRate| (from main)");
-      for (size_t index = 0; index < allFundingRates.size(); ++index) {
-        const auto& fr = allFundingRates[index];
-        NOTICE("#" << (index + 1) << " " << fr.symbol << " rate=" << fr.rate
-                   << " interval=" << fr.fundingRateInterval << "h"
-                   << " nextUpdate=" << fr.nextFundingTime);
-      }
-    }
-    SLEEP_MS(60 * 1000);
-  }
-
-  fundingRateMonitor->stop();
+  // bool openOk = strategy->openPosition();
+  // NOTICE("Open PEPE position result openOk=" << openOk);
 
   curl_global_cleanup();
   NOTICE("STOP PID " << getpid());
