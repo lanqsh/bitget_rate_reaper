@@ -108,4 +108,4 @@ int Tracer::GetLevel(const std::string &name) {
   return Poco::Logger::get(name).getLevel();
 }
 
-}  // namespace logger
+}

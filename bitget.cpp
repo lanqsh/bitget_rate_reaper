@@ -23,6 +23,11 @@ std::string Bitget::secretKey_;
 std::string Bitget::passphrase_;
 
 std::mutex Bitget::curl_smtx_;
+CURL* Bitget::curl_s_ = nullptr;
+
+std::set<std::string> Bitget::crossedMarginSymbols_;
+bool Bitget::crossedMarginSymbolsLoaded_ = false;
+std::mutex Bitget::crossedMarginSymbolsMtx_;
 
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
   size_t totalSize = size * nmemb;
@@ -36,7 +41,12 @@ Bitget::Bitget(const std::string& instId) {
   init();
 }
 
-Bitget::~Bitget() {}
+Bitget::~Bitget() {
+  if (curl_) {
+    curl_easy_cleanup(curl_);
+    curl_ = nullptr;
+  }
+}
 
 void Bitget::init() {
   symbols();
@@ -58,10 +68,11 @@ std::string Bitget::sendRequest(const std::string& requestPath,
                    << method << " " << requestPath << ", query: " << query
                    << ", body: " << body);
   std::lock_guard<std::mutex> lock(curl_mtx_);
+  if (!curl_) curl_ = curl_easy_init();
   CURLcode res;
   std::string readBuffer;
-  CURL* curl = curl_easy_init();
-  if (curl) {
+  if (curl_) {
+    curl_easy_reset(curl_);
     std::string timestamp = getTimestampMs();
 
     std::string prehash = timestamp + method + requestPath + query + body;
@@ -82,26 +93,25 @@ std::string Bitget::sendRequest(const std::string& requestPath,
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, "locale: en-US");
 
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &readBuffer);
+    curl_easy_setopt(curl_, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
 
     if (method == "POST") {
-      curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+      curl_easy_setopt(curl_, CURLOPT_POSTFIELDS, body.c_str());
     }
     if (method == "DELETE") {
-      curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+      curl_easy_setopt(curl_, CURLOPT_CUSTOMREQUEST, "DELETE");
     }
 
-    res = curl_easy_perform(curl);
+    res = curl_easy_perform(curl_);
     if (res != CURLE_OK) {
       ERROR_("api", "curl_easy_perform() failed: " << curl_easy_strerror(res));
     }
 
     curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
   }
 
   try {
@@ -123,10 +133,11 @@ std::string Bitget::sendRequestStatic(const std::string& requestPath,
                     << method << " " << requestPath << ", query: " << query
                     << ", body: " << body);
   std::lock_guard<std::mutex> lock(curl_smtx_);
+  if (!curl_s_) curl_s_ = curl_easy_init();
   CURLcode res;
   std::string readBuffer;
-  CURL* curl = curl_easy_init();
-  if (curl) {
+  if (curl_s_) {
+    curl_easy_reset(curl_s_);
     std::string timestamp = getTimestampMs();
 
     std::string prehash = timestamp + method + requestPath + query + body;
@@ -151,26 +162,25 @@ std::string Bitget::sendRequestStatic(const std::string& requestPath,
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, "locale: en-US");
 
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(curl_s_, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl_s_, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl_s_, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl_s_, CURLOPT_WRITEDATA, &readBuffer);
+    curl_easy_setopt(curl_s_, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
 
     if (method == "POST") {
-      curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+      curl_easy_setopt(curl_s_, CURLOPT_POSTFIELDS, body.c_str());
     }
     if (method == "DELETE") {
-      curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+      curl_easy_setopt(curl_s_, CURLOPT_CUSTOMREQUEST, "DELETE");
     }
 
-    res = curl_easy_perform(curl);
+    res = curl_easy_perform(curl_s_);
     if (res != CURLE_OK) {
       ERROR_("api", "curl_easy_perform() failed: " << curl_easy_strerror(res));
     }
 
     curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
   }
 
   try {
@@ -272,10 +282,6 @@ bool Bitget::placeOrder(Order& order) {
 
   j["price"] = adjustDecimalPlaces(order.price, symbol_.pricePlace);
   j["size"] = adjustDecimalPlaces(order.size, symbol_.volumePlace);
-  // j["presetStopSurplusPrice"] =
-  //     adjustDecimalPlaces(order.tp_price, symbol_.pricePlace);
-  // j["presetStopSurplusExecutePrice"] =
-  //     adjustDecimalPlaces(order.tp_price, symbol_.pricePlace);
 
   queryBody = j.dump();
 
@@ -410,7 +416,15 @@ bool Bitget::placeMarginOrder(MarginOrder& order) {
     auto res = nlohmann::json::parse(response);
     std::string code = res["code"];
     if (code != API_SUCCESS) {
-      ERROR("API error: " << code << ", " << response);
+      if (code == "50004") {
+        // 该交易对不支持全仓，从白名单中移除并打印告警
+        NOTICE("placeMarginOrder: " << symbol
+               << " does not support cross margin, removed from whitelist");
+        std::lock_guard<std::mutex> wl(crossedMarginSymbolsMtx_);
+        crossedMarginSymbols_.erase(symbol);
+      } else {
+        ERROR("API error: " << code << ", " << response);
+      }
       return false;
     }
 
@@ -483,13 +497,10 @@ bool Bitget::closeCrossedMarginPosition(const std::string& coin) {
     float borrowUsdt = std::fabs(netQty) * referenceAsk;
     order.side = "buy";
 
-    // autoRepay minimum check is on the actual borrow USDT value, NOT quoteSize.
-    // If borrow < 1 USDT, autoRepay always fails. Use normal buy + manual repay instead.
     if (borrowUsdt < 1.0f) {
       order.loanType = "normal";
       order.quoteSize = "1.0000";
     } else {
-      // Use 1.5% buffer to account for price movement and precision truncation.
       order.loanType = "autoRepay";
       order.quoteSize = safeFtos(borrowUsdt * 1.015f, 4);
     }
@@ -501,7 +512,6 @@ bool Bitget::closeCrossedMarginPosition(const std::string& coin) {
          << " side=" << order.side << " loanType=" << order.loanType
          << " ok=" << ok);
 
-  // After a normal (non-autoRepay) buy, repay the borrow directly in base coin.
   if (ok && netQty < 0 && order.loanType == "normal") {
     float repayAmount = asset.borrow + asset.interest;
     if (repayAmount > FLOAT_EPSILON) {
@@ -513,7 +523,6 @@ bool Bitget::closeCrossedMarginPosition(const std::string& coin) {
     return ok;
   }
 
-  // Verify closure: retry once if a short borrow residual remains (autoRepay path).
   if (ok && netQty < 0) {
     CrossedMarginAsset assetAfter;
     if (Bitget::crossedMarginAsset(baseCoin, assetAfter) &&
@@ -525,7 +534,6 @@ bool Bitget::closeCrossedMarginPosition(const std::string& coin) {
       float refAsk2 = ticker2.askPr > 0 ? ticker2.askPr : ticker2.lastPr;
       float residualUsdt = std::fabs(assetAfter.net) * refAsk2;
       if (residualUsdt < 1.0f) {
-        // Same small-borrow problem: buy normal + manual repay.
         MarginOrder retryOrder;
         retryOrder.symbol = getInstId();
         retryOrder.orderType = "market";
@@ -577,14 +585,13 @@ bool Bitget::crossedMarginRepay(const std::string& coin, float amount) {
 }
 
 bool Bitget::closeFuturesPosition() {
-  // Get current position to determine size and direction
   Position position;
   if (!singlePosition(position)) {
     ERROR("closeFuturesPosition: failed to get position for " << getInstId());
     return false;
   }
   if (position.total == 0) {
-    return true;  // nothing to close
+    return true;
   }
 
   NOTICE("closeFuturesPosition snapshot symbol="
@@ -638,7 +645,6 @@ bool Bitget::closeFuturesPosition() {
     return false;
   };
 
-  // Try explicit long/short closes first — most reliable in hedge mode
   nlohmann::json jLongClose;
   jLongClose["symbol"] = getInstId();
   jLongClose["side"] = "sell";
@@ -673,7 +679,6 @@ bool Bitget::closeFuturesPosition() {
   } catch (...) {
   }
 
-  // Fallback: derive close side from queried holdSide
   const std::string guessedCloseSide =
       (position.holdSide == "long") ? "sell" : "buy";
   const std::string oppositeCloseSide =
@@ -919,6 +924,39 @@ bool Bitget::singlePosition(Position& position) {
   return false;
 }
 
+bool Bitget::allFuturesPositions(std::vector<Position>& positions) {
+  std::string requestPath = "/api/v2/mix/position/all-position";
+  std::string queryString = "?productType=USDT-FUTURES&marginCoin=USDT";
+  auto response = sendRequestStatic(requestPath, "GET", queryString);
+  try {
+    auto j = nlohmann::json::parse(response);
+    std::string code = j["code"];
+    if (code != API_SUCCESS) {
+      ERROR("allFuturesPositions API error: " << code << ", " << response);
+      return false;
+    }
+    positions.clear();
+    if (!j["data"].is_array()) return true;
+    for (const auto& item : j["data"]) {
+      float total = safeStof(item.value("total", "0"));
+      if (total <= 0) continue;
+      Position p;
+      p.symbol = item.value("symbol", "");
+      p.holdSide = item.value("holdSide", "");
+      p.available = safeStof(item.value("available", "0"));
+      p.locked = safeStof(item.value("locked", "0"));
+      p.total = total;
+      positions.push_back(p);
+    }
+    return true;
+  } catch (const nlohmann::json::exception& e) {
+    ERROR("allFuturesPositions error: " << e.what() << ", response:" << response);
+  } catch (const std::exception& e) {
+    ERROR("allFuturesPositions error: " << e.what());
+  }
+  return false;
+}
+
 bool Bitget::savingsAssets(Saving& saving) {
   std::string requestPath = "/api/v2/earn/savings/assets";
   std::string queryString = "?periodType=flexible";
@@ -1093,4 +1131,44 @@ bool Bitget::fundingRate(FundingRate& fr) {
     ERROR("error: " << e.what());
   }
   return false;
+}
+
+bool Bitget::crossedMarginSymbolSupported(const std::string& symbol) {
+  {
+    std::lock_guard<std::mutex> lock(crossedMarginSymbolsMtx_);
+    if (crossedMarginSymbolsLoaded_) {
+      return crossedMarginSymbols_.count(symbol) > 0;
+    }
+  }
+
+  const std::string requestPath = "/api/v2/margin/currencies";
+  const std::string response = sendRequestStatic(requestPath, "GET");
+
+  std::lock_guard<std::mutex> lock(crossedMarginSymbolsMtx_);
+  if (!crossedMarginSymbolsLoaded_) {
+    try {
+      auto j = nlohmann::json::parse(response);
+      if (j["code"].get<std::string>() == API_SUCCESS && j["data"].is_array()) {
+        for (const auto& item : j["data"]) {
+          if (!item.contains("symbol") || item["symbol"].is_null()) continue;
+          bool borrowable = item.contains("isCrossBorrowable") &&
+                            item["isCrossBorrowable"].is_boolean() &&
+                            item["isCrossBorrowable"].get<bool>();
+          if (borrowable) {
+            crossedMarginSymbols_.insert(item["symbol"].get<std::string>());
+          }
+        }
+        crossedMarginSymbolsLoaded_ = true;
+        NOTICE("Loaded " << crossedMarginSymbols_.size()
+                         << " cross margin symbols");
+      } else {
+        ERROR("crossedMarginSymbolSupported API error: " << response);
+      }
+    } catch (const nlohmann::json::exception& e) {
+      ERROR("crossedMarginSymbolSupported parse error: " << e.what());
+    } catch (const std::exception& e) {
+      ERROR("crossedMarginSymbolSupported error: " << e.what());
+    }
+  }
+  return crossedMarginSymbols_.count(symbol) > 0;
 }

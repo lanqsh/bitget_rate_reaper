@@ -1,13 +1,4 @@
-﻿/*!
- * @file      tracer.h
- * @version   v1.0.0
- * @copyright (c) 2024
- * @author    lanqsh@hotmail.com
- * @date      2023-7-31
- * @brief     logger
- * @attention
- */
-#ifndef _TRACER_H
+﻿#ifndef _TRACER_H
 #define _TRACER_H
 
 #include <cstdio>
@@ -28,27 +19,6 @@
 const std::string DEFAULT_LOGGER_NAME = "default";
 
 namespace logger {
-
-/*!
- * @class logger.Tracer
- * @brief support stream logger, macro INFO has one param
- *        INFO_ has two param, first one for logger name.
- *
- * @attention MUST init before use
- *
- * @code
- *
- * logger::Tracer::Init();
- * logger::Tracer::Init("demo", "/userdata/log/demo.log");
-
- * int i_num = 10;
- * float f_num = 10.0;
- * std::string str = "test str";
- * INFO(str << ", num = " << i_num << ", f_num = " << f_num);
- * INFO_("demo", str << ", num = " << i_num << ", f_num = " << f_num);
- *
- * @endcode
- */
 
 class Tracer {
  public:
@@ -71,7 +41,7 @@ class Tracer {
   static std::vector<std::string> logger_;
 };
 
-}  // namespace logger
+}
 
 #define LOGMSG(logger_name, message, level)                                   \
   do {                                                                        \
@@ -143,4 +113,4 @@ class Tracer {
 
 #define HEX(_msg, _buf, _len) HEX_(DEFAULT_LOGGER_NAME, _msg, _buf, _len)
 
-#endif  // _TRACER_H
+#endif

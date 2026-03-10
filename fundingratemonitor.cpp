@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <map>
 #include <utility>
 
@@ -63,7 +64,7 @@ bool FundingRateMonitor::fetchFundingRateBySymbol(const std::string& symbol,
     std::string code = j["code"];
     if (code != API_SUCCESS) {
       ERROR("fetchFundingRateBySymbol API error: " << code
-                                                    << ", symbol=" << symbol);
+                                                   << ", symbol=" << symbol);
       return false;
     }
 
@@ -92,12 +93,11 @@ bool FundingRateMonitor::fetchFundingRateBySymbol(const std::string& symbol,
 
     return true;
   } catch (const nlohmann::json::exception& e) {
-    ERROR("fetchFundingRateBySymbol parse error: " << e.what()
-                                                    << ", symbol=" << symbol
-                                                    << ", response:" << response);
+    ERROR("fetchFundingRateBySymbol parse error: "
+          << e.what() << ", symbol=" << symbol << ", response:" << response);
   } catch (const std::exception& e) {
     ERROR("fetchFundingRateBySymbol error: " << e.what()
-                                              << ", symbol=" << symbol);
+                                             << ", symbol=" << symbol);
   }
 
   return false;
@@ -115,8 +115,20 @@ bool FundingRateMonitor::refreshOnce() {
   snapshot.reserve(tickerRates.size());
 
   for (auto& item : tickerRates) {
+    if (!Bitget::crossedMarginSymbolSupported(item.first)) {
+      DEBUG("FundingRateMonitor: " << item.first
+                                   << " does not support cross margin, skip");
+      continue;
+    }
     FundingRate fr = item.second;
     if (fetchFundingRateBySymbol(item.first, fr)) {
+      DEBUG("FundingRateMonitor: "
+            << fr.symbol << " rate=" << fr.rate << " nextFunding=" << std::fixed
+            << std::setprecision(1)
+            << (static_cast<int64_t>(fr.nextFundingTime) -
+                static_cast<int64_t>(getCurrentTimeMs())) /
+                   3600000.0
+            << "h");
       snapshot.push_back(fr);
     }
   }
@@ -144,11 +156,10 @@ bool FundingRateMonitor::getMaxAbsFundingRate(FundingRate& out) const {
     return false;
   }
 
-  auto it = std::max_element(
-      fundingRates_.begin(), fundingRates_.end(),
-      [](const FundingRate& a, const FundingRate& b) {
-        return std::fabs(a.rate) < std::fabs(b.rate);
-      });
+  auto it = std::max_element(fundingRates_.begin(), fundingRates_.end(),
+                             [](const FundingRate& a, const FundingRate& b) {
+                               return std::fabs(a.rate) < std::fabs(b.rate);
+                             });
 
   out = *it;
   return true;

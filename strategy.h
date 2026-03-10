@@ -4,45 +4,30 @@
 #include <memory>
 #include <string>
 
-#include "Poco/Runnable.h"
-#include "Poco/Thread.h"
 #include "bitget.h"
 #include "tracer.h"
 
-// Funding rate arbitrage strategy for a single perpetual contract.
-// Opens a position before funding settlement and closes after collecting.
-class Strategy : public Poco::Runnable {
+class Strategy {
  public:
-  Strategy(std::shared_ptr<Bitget> client);
-  virtual ~Strategy();
-  void run() override;
-
-  void start();
-  void stop();
-  void wait();
-  bool openPosition();   // open crossed-margin + futures hedge
-  bool closePosition();  // close crossed-margin + futures hedge
-  bool isRunning() { return thread_ && thread_->isRunning(); }
+  explicit Strategy(std::shared_ptr<Bitget> client);
+  bool openPosition();
+  bool closePosition();
+  bool hasPosition();
+  bool updateFundingRate();
+  bool checkStopLoss();
   std::string getInstId() { return instId_; }
   float getFundingRate() { return funding_rate_.rate; }
+  uint64_t getNextFundingTime() { return funding_rate_.nextFundingTime; }
 
  private:
   void init();
-  bool updateFundingRate();
-  bool hasPosition();
 
  private:
-  bool thread_running_{false};
-
   std::string instId_;
-  std::shared_ptr<Poco::Thread> thread_;
   std::shared_ptr<Bitget> client_;
-
   FundingRate funding_rate_;
   Position position_;
-  bool position_opened_{false};
-  uint64_t settlement_time_{
-      0};  // next settlement timestamp at position open time
+  float entry_price_{0.0f};
 };
 
 #endif
