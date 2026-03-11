@@ -53,7 +53,11 @@ class Bitget {
   static bool crossedMarginAsset(const std::string& coin,
                                  CrossedMarginAsset& asset);
   bool crossedMarginRepay(const std::string& coin, float amount);
+  bool flashRepay(const std::string& coin);
   static bool crossedMarginSymbolSupported(const std::string& symbol);
+  static void crossedMarginRemoveFromWhitelist(const std::string& symbol);
+  static bool crossedMarginInterestRateAndLimit(const std::string& coin,
+                                                MarginInterestInfo& info);
   static bool allFuturesPositions(std::vector<Position>& positions);
 
  private:

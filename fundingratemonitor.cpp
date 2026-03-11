@@ -120,6 +120,52 @@ bool FundingRateMonitor::refreshOnce() {
                                    << " does not support cross margin, skip");
       continue;
     }
+
+    std::string baseCoin = item.first;
+    const std::string suffix = MARGIN_COIN;
+    if (baseCoin.size() > suffix.size() &&
+        baseCoin.substr(baseCoin.size() - suffix.size()) == suffix) {
+      baseCoin = baseCoin.substr(0, baseCoin.size() - suffix.size());
+    }
+
+    MarginInterestInfo interestInfo;
+    if (!Bitget::crossedMarginInterestRateAndLimit(baseCoin, interestInfo)) {
+      DEBUG("FundingRateMonitor: " << item.first << " failed to get interest info, skip");
+      continue;
+    }
+    if (!interestInfo.borrowable) {
+      NOTICE("FundingRateMonitor: " << item.first << " not borrowable, removing from whitelist");
+      Bitget::crossedMarginRemoveFromWhitelist(item.first);
+      continue;
+    }
+
+    float lastPrice = item.second.lastPrice;
+    if (lastPrice > 0) {
+      float neededUsdt = kConfig.openPrincipal * kConfig.lever;
+      float maxBorrowableUsdt = interestInfo.maxBorrowableAmount * lastPrice;
+      if (maxBorrowableUsdt < neededUsdt) {
+        DEBUG("FundingRateMonitor: " << item.first
+              << " maxBorrowable=" << maxBorrowableUsdt
+              << " < needed=" << neededUsdt << ", skip");
+        continue;
+      }
+    }
+
+    float hourlyRate = interestInfo.dailyInterestRate / 100.0f / 24.0f;
+    float interestCost2h = 2.0f * hourlyRate;
+    float effectiveRate = std::fabs(item.second.rate) - interestCost2h;
+    NOTICE("FundingRateMonitor: " << item.first
+          << " fundingRate=" << item.second.rate * 100.0f << "%"
+          << " dailyInterest=" << interestInfo.dailyInterestRate << "%"
+          << " effectiveRate=" << effectiveRate * 100.0f << "%");
+    if (effectiveRate < kConfig.fundingRateThreshold) {
+      DEBUG("FundingRateMonitor: " << item.first
+            << " effectiveRate=" << effectiveRate
+            << " < threshold=" << kConfig.fundingRateThreshold
+            << " after subtracting 2h interest, skip");
+      continue;
+    }
+
     FundingRate fr = item.second;
     if (fetchFundingRateBySymbol(item.first, fr)) {
       DEBUG("FundingRateMonitor: "

@@ -9,12 +9,12 @@
 #define RESET_COLOR "\033[0m"
 
 #define ENTRY_BEFORE_SETTLEMENT_MS (10LL * 60 * 1000)
-#define EXIT_AFTER_SETTLEMENT_MS (60LL * 1000)
+#define EXIT_AFTER_SETTLEMENT_MS (10LL * 60 * 1000)
 #define STRATEGY_POLL_INTERVAL_MS (30 * 1000)
 #define SCAN_INTERVAL_MS (5 * 60 * 1000)
 
 #define FLOAT_EPSILON   1e-6f
 
-#define STOP_LOSS_RATIO 0.30f   // 价格偏离入场价超过此比例时强制平仓
+#define STOP_LOSS_RATIO 0.30f
 
 #endif

@@ -94,8 +94,16 @@ struct Saving {
 struct FundingRate {
   std::string symbol;
   float rate{0.0};
+  float lastPrice{0.0};
   int fundingRateInterval{0};
   uint64_t nextFundingTime{0};
+};
+
+struct MarginInterestInfo {
+  std::string coin;
+  bool borrowable{false};
+  float dailyInterestRate{0.0f};  // percentage, e.g. 0.1 means 0.1% per day
+  float maxBorrowableAmount{0.0f}; // in coin units
 };
 
 #endif
