@@ -95,6 +95,11 @@ bool Strategy::openPosition() {
   futuresOrder.size = static_cast<float>(contractCount);
 
   bool marginOk = client_->placeMarginOrder(marginOrder);
+  if (!marginOk) {
+    ERROR("OpenPosition: margin order failed, skip futures for " << instId_);
+    return false;
+  }
+
   bool futuresOk = client_->placeMarketOrder(futuresOrder);
 
   NOTICE("OpenPosition result inst="
@@ -110,12 +115,21 @@ bool Strategy::openPosition() {
                       " price=" + safeFtos(ticker.lastPr, client_->precision()) +
                       " fundingRate=" + safeFtos(currentFunding.rate * 100.0f, 4) + "%";
     sendMessage(msg, true);
+    return true;
   }
-  return marginOk && futuresOk;
+
+  // Futures failed after margin succeeded: roll back margin leg
+  NOTICE("OpenPosition: futures failed, closing margin leg for " << instId_);
+  client_->closeCrossedMarginPosition();
+  return false;
 }
 
 bool Strategy::closePosition() {
-  bool marginOk = client_->closeCrossedMarginPosition();
+  bool marginOk = client_->flashRepay();
+  if (!marginOk) {
+    NOTICE("ClosePosition: flashRepay failed, falling back to closeCrossedMarginPosition for " << instId_);
+    marginOk = client_->closeCrossedMarginPosition();
+  }
   bool futuresOk = client_->closeFuturesPosition();
   NOTICE("ClosePosition result inst=" << instId_ << " marginOk=" << marginOk
                                       << " futuresOk=" << futuresOk);

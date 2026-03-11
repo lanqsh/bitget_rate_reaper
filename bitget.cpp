@@ -416,10 +416,9 @@ bool Bitget::placeMarginOrder(MarginOrder& order) {
     auto res = nlohmann::json::parse(response);
     std::string code = res["code"];
     if (code != API_SUCCESS) {
-      if (code == "50004") {
-        // 该交易对不支持全仓，从白名单中移除并打印告警
+      if (code == "50004" || code == "50035") {
         NOTICE("placeMarginOrder: " << symbol
-               << " does not support cross margin, removed from whitelist");
+               << " removed from whitelist, code=" << code);
         std::lock_guard<std::mutex> wl(crossedMarginSymbolsMtx_);
         crossedMarginSymbols_.erase(symbol);
       } else {
@@ -559,6 +558,28 @@ bool Bitget::closeCrossedMarginPosition(const std::string& coin) {
   }
 
   return ok;
+}
+
+bool Bitget::flashRepay(const std::string& coin) {
+  std::string requestPath = "/api/v2/margin/crossed/account/flash-repay";
+  nlohmann::json j;
+  j["coin"] = coin.empty() ? getBaseCoin() : coin;
+  auto response = sendRequest(requestPath, "POST", "", j.dump());
+  try {
+    auto res = nlohmann::json::parse(response);
+    std::string code = res["code"];
+    if (code != API_SUCCESS) {
+      ERROR("flashRepay API error: " << code << ", " << response);
+      return false;
+    }
+    NOTICE("flashRepay ok coin=" << j["coin"].get<std::string>());
+    return true;
+  } catch (const nlohmann::json::exception& e) {
+    ERROR("flashRepay error: " << e.what());
+  } catch (const std::exception& e) {
+    ERROR("flashRepay error: " << e.what());
+  }
+  return false;
 }
 
 bool Bitget::crossedMarginRepay(const std::string& coin, float amount) {
@@ -861,6 +882,12 @@ bool Bitget::tickers(std::map<std::string, FundingRate>& fundingRates) {
 
       if (std::fabs(fr.rate) < 0.005f) return;
 
+      if (item.contains("lastPr") && !item["lastPr"].is_null()) {
+        fr.lastPrice = item["lastPr"].is_string()
+                           ? safeStof(item["lastPr"])
+                           : item["lastPr"].get<float>();
+      }
+
       if (item.contains("fundingTime") && !item["fundingTime"].is_null()) {
         if (item["fundingTime"].is_string()) {
           fr.nextFundingTime = safeStoll(item["fundingTime"]);
@@ -921,6 +948,37 @@ bool Bitget::singlePosition(Position& position) {
     ERROR("error: " << e.what());
   }
 
+  return false;
+}
+
+void Bitget::crossedMarginRemoveFromWhitelist(const std::string& symbol) {
+  std::lock_guard<std::mutex> lock(crossedMarginSymbolsMtx_);
+  crossedMarginSymbols_.erase(symbol);
+}
+
+bool Bitget::crossedMarginInterestRateAndLimit(const std::string& coin,
+                                               MarginInterestInfo& info) {
+  std::string requestPath = "/api/v2/margin/crossed/interest-rate-and-limit";
+  std::string queryString = "?coin=" + coin;
+  auto response = sendRequestStatic(requestPath, "GET", queryString);
+  try {
+    auto j = nlohmann::json::parse(response);
+    if (j["code"].get<std::string>() != API_SUCCESS) {
+      ERROR("crossedMarginInterestRateAndLimit API error: " << response);
+      return false;
+    }
+    if (!j["data"].is_array() || j["data"].empty()) return false;
+    const auto& item = j["data"][0];
+    info.coin = coin;
+    info.borrowable = item.value("borrowable", false);
+    info.dailyInterestRate = safeStof(item.value("dailyInterestRate", "0"));
+    info.maxBorrowableAmount = safeStof(item.value("maxBorrowableAmount", "0"));
+    return true;
+  } catch (const nlohmann::json::exception& e) {
+    ERROR("crossedMarginInterestRateAndLimit error: " << e.what());
+  } catch (const std::exception& e) {
+    ERROR("crossedMarginInterestRateAndLimit error: " << e.what());
+  }
   return false;
 }
 
